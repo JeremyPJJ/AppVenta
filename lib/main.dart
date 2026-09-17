@@ -321,6 +321,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
       future: dbHelper.obtenerMetricasDashboard(
         mesFiltro: _filtroPeriodo == 'Mes Específico' ? _mesFiltroSeleccionado : null,
         anioFiltro: _filtroPeriodo == 'Mes Específico' ? _anioFiltroSeleccionado : null,
+        fechaFiltro: _filtroPeriodo == 'Fecha Específica' ? _fechaFiltroSeleccionada : null,
       ),
       builder: (context, snapshot) {
         if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
@@ -623,13 +624,15 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
       childAspectRatio: 1.12,
       children: [
         _tarjetaKPINeon(
-          titulo: 'Ventas de Hoy',
+          titulo: (_filtroPeriodo == 'Fecha Específica' && _fechaFiltroSeleccionada != null)
+              ? 'Ventas del ${_fechaFiltroSeleccionada!.day}/${_fechaFiltroSeleccionada!.month}/${_fechaFiltroSeleccionada!.year}'
+              : 'Ventas de Hoy',
           valor: 'S/ ${(data['ventas_hoy'] as num?)?.toDouble().toStringAsFixed(2) ?? "0.00"}',
           icono: Icons.calendar_today,
           colorAccento: const Color(0xFF3B82F6),
           colorFondo: const Color(0xFF101B33),
           colorBorde: const Color(0xFF1E40AF),
-          comparativa: '0% vs. ayer',
+          comparativa: '0% vs. día anterior',
         ),
         _tarjetaKPINeon(
           titulo: 'Ganancia Semanal',

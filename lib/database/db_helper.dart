@@ -251,20 +251,46 @@ class DatabaseHelper {
     final double precioUnit = (producto['precio_venta_unidad'] as num?)?.toDouble() ?? 0.0;
     final double costoUnit = (producto['costo_unitario'] as num?)?.toDouble() ?? 0.0;
 
-    final double montoAdeudado = cantidad * precioUnit;
-    final double costoBase = cantidad * costoUnit;
+    final double montoAdeudadoNuevo = cantidad * precioUnit;
+    final double costoBaseNuevo = cantidad * costoUnit;
+
+    final deudasExistentes = await db.query(
+      'deudas',
+      where: 'cliente_nombre = ? AND producto_id = ? AND estado = ?',
+      whereArgs: [cliente, productoId, 'PENDIENTE'],
+    );
 
     await db.transaction((txn) async {
-      await txn.insert('deudas', {
-        'cliente_nombre': cliente,
-        'producto_id': productoId,
-        'tipo_venta': tipoVenta,
-        'cantidad': cantidad,
-        'monto_adeudado': montoAdeudado,
-        'costo_base': costoBase,
-        'estado': 'PENDIENTE',
-        'fecha_creacion': DateTime.now().toIso8601String(),
-      });
+      if (deudasExistentes.isNotEmpty) {
+        final deudaExistente = deudasExistentes.first;
+        final int idExistente = deudaExistente['id'] as int;
+        final int cantActual = (deudaExistente['cantidad'] as num?)?.toInt() ?? 0;
+        final double montoActual = (deudaExistente['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
+        final double costoActual = (deudaExistente['costo_base'] as num?)?.toDouble() ?? 0.0;
+
+        await txn.update(
+          'deudas',
+          {
+            'cantidad': cantActual + cantidad,
+            'monto_adeudado': montoActual + montoAdeudadoNuevo,
+            'costo_base': costoActual + costoBaseNuevo,
+            'fecha_creacion': DateTime.now().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [idExistente],
+        );
+      } else {
+        await txn.insert('deudas', {
+          'cliente_nombre': cliente,
+          'producto_id': productoId,
+          'tipo_venta': tipoVenta,
+          'cantidad': cantidad,
+          'monto_adeudado': montoAdeudadoNuevo,
+          'costo_base': costoBaseNuevo,
+          'estado': 'PENDIENTE',
+          'fecha_creacion': DateTime.now().toIso8601String(),
+        });
+      }
 
       await txn.rawUpdate('''
         UPDATE productos 
@@ -473,11 +499,22 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> obtenerDetalleDeudasCliente(String clienteNombre) async {
     final db = await database;
     return await db.rawQuery('''
-      SELECT d.*, p.nombre AS producto_nombre
+      SELECT 
+        MIN(d.id) AS id,
+        d.cliente_nombre,
+        d.producto_id,
+        d.tipo_venta,
+        COALESCE(SUM(d.cantidad), 0) AS cantidad,
+        COALESCE(SUM(d.monto_adeudado), 0.0) AS monto_adeudado,
+        COALESCE(SUM(d.costo_base), 0.0) AS costo_base,
+        d.estado,
+        MAX(d.fecha_creacion) AS fecha_creacion,
+        p.nombre AS producto_nombre
       FROM deudas d
       INNER JOIN productos p ON d.producto_id = p.id
       WHERE d.cliente_nombre = ? AND d.estado = 'PENDIENTE'
-      ORDER BY d.id DESC
+      GROUP BY d.cliente_nombre, d.producto_id
+      ORDER BY MAX(d.id) DESC
     ''', [clienteNombre]);
   }
 
@@ -495,8 +532,15 @@ class DatabaseHelper {
   Future<Map<String, dynamic>> obtenerMetricasDashboard({
     int? mesFiltro,
     int? anioFiltro,
+    DateTime? fechaFiltro,
   }) async {
     final db = await database;
+
+    String whereHoy = "date(fecha) = date('now')";
+    if (fechaFiltro != null) {
+      final fStr = "${fechaFiltro.year}-${fechaFiltro.month.toString().padLeft(2, '0')}-${fechaFiltro.day.toString().padLeft(2, '0')}";
+      whereHoy = "date(fecha) = '$fStr'";
+    }
 
     final resHoy = await db.rawQuery('''
       SELECT 
@@ -504,7 +548,7 @@ class DatabaseHelper {
         COALESCE(SUM(ganancia_neta), 0) AS ganancia_total,
         COALESCE(SUM(cantidad), 0) AS unidades_vendidas
       FROM ventas 
-      WHERE date(fecha) = date('now')
+      WHERE $whereHoy
     ''');
 
     final resSemanal = await db.rawQuery('''
