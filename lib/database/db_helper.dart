@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'firestore_helper.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -94,6 +95,113 @@ class DatabaseHelper {
       await txn.delete('compras');
       await txn.delete('productos');
     });
+    await SyncManager.instance.borrarTodoEnNube();
+  }
+
+  // --- SINCRONIZACIÓN LOCAL DESDE NUBE ---
+
+  Future<void> sincronizarProductoLocal({
+    required int id,
+    required String nombre,
+    required double precioVentaUnidad,
+    required int stockUnidades,
+  }) async {
+    final db = await database;
+    final res = await db.query('productos', where: 'id = ?', whereArgs: [id]);
+    if (res.isEmpty) {
+      await db.insert('productos', {
+        'id': id,
+        'nombre': nombre,
+        'unidades_por_paquete': 1,
+        'costo_paquete': 0.0,
+        'costo_unitario': 0.0,
+        'precio_venta_unidad': precioVentaUnidad,
+        'precio_venta_paquete': 0.0,
+        'stock_unidades': stockUnidades,
+      });
+    } else {
+      await db.update(
+        'productos',
+        {
+          'nombre': nombre,
+          'precio_venta_unidad': precioVentaUnidad,
+          'stock_unidades': stockUnidades,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
+  }
+
+  Future<void> sincronizarVentaLocal({
+    required String docId,
+    required int productoId,
+    required String tipoVenta,
+    required int cantidad,
+    required double montoTotalCobrado,
+    required double costoTotalAplicado,
+    required double gananciaNeta,
+    required String fecha,
+  }) async {
+    final db = await database;
+    final res = await db.query('ventas', where: 'producto_id = ? AND fecha = ?', whereArgs: [productoId, fecha]);
+    if (res.isEmpty) {
+      await db.insert('ventas', {
+        'producto_id': productoId,
+        'tipo_venta': tipoVenta,
+        'cantidad': cantidad,
+        'monto_total_cobrado': montoTotalCobrado,
+        'costo_total_aplicado': costoTotalAplicado,
+        'ganancia_neta': gananciaNeta,
+        'fecha': fecha,
+      });
+    }
+  }
+
+  Future<void> sincronizarDeudaLocal({
+    required String docId,
+    required String clienteNombre,
+    required int productoId,
+    required int cantidad,
+    required double montoAdeudado,
+    required double costoBase,
+    required String estado,
+    required String fechaCreacion,
+  }) async {
+    final db = await database;
+    final res = await db.query(
+      'deudas',
+      where: 'cliente_nombre = ? AND producto_id = ?',
+      whereArgs: [clienteNombre, productoId],
+    );
+
+    if (res.isEmpty) {
+      if (estado == 'PENDIENTE' && montoAdeudado > 0) {
+        await db.insert('deudas', {
+          'cliente_nombre': clienteNombre,
+          'producto_id': productoId,
+          'tipo_venta': 'UNIDAD',
+          'cantidad': cantidad,
+          'monto_adeudado': montoAdeudado,
+          'costo_base': costoBase,
+          'estado': estado,
+          'fecha_creacion': fechaCreacion,
+        });
+      }
+    } else {
+      final id = res.first['id'] as int;
+      await db.update(
+        'deudas',
+        {
+          'cantidad': cantidad,
+          'monto_adeudado': montoAdeudado,
+          'costo_base': costoBase,
+          'estado': estado,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
   }
 
   // --- REGISTRO DE PRODUCTOS Y COMPRAS ---
@@ -133,6 +241,7 @@ class DatabaseHelper {
       }
     });
 
+    await SyncManager.instance.subirProducto(productoId, nombre, precioVentaUnidad, stockInicialUnidades);
     return productoId;
   }
 
@@ -157,6 +266,7 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
+    await SyncManager.instance.subirProducto(id, nombre, precioVentaUnidad, stockUnidades);
   }
 
   // --- VENTAS INMEDIATAS (INDIVIDUALES Y MÚLTIPLES) ---
@@ -183,6 +293,7 @@ class DatabaseHelper {
     final double montoCobrado = cantidad * precioUnit;
     final double costoAplicado = cantidad * costoUnit;
     final double ganancia = montoCobrado - costoAplicado;
+    final fecha = DateTime.now().toIso8601String();
 
     await db.transaction((txn) async {
       await txn.insert('ventas', {
@@ -192,7 +303,7 @@ class DatabaseHelper {
         'monto_total_cobrado': montoCobrado,
         'costo_total_aplicado': costoAplicado,
         'ganancia_neta': ganancia,
-        'fecha': DateTime.now().toIso8601String(),
+        'fecha': fecha,
       });
 
       await txn.rawUpdate('''
@@ -201,6 +312,24 @@ class DatabaseHelper {
         WHERE id = ?
       ''', [unidadesADescontar, productoId]);
     });
+
+    final int nuevoStock = ((producto['stock_unidades'] as num?)?.toInt() ?? 0) - cantidad;
+    await SyncManager.instance.subirProducto(
+      productoId,
+      producto['nombre'].toString(),
+      precioUnit,
+      nuevoStock,
+    );
+
+    await SyncManager.instance.subirVenta(
+      productoId: productoId,
+      tipoVenta: tipoVenta,
+      cantidad: cantidad,
+      montoTotalCobrado: montoCobrado,
+      costoTotalAplicado: costoAplicado,
+      gananciaNeta: ganancia,
+      fecha: fecha,
+    );
   }
 
   Future<void> registrarVentaMultiple(List<Map<String, dynamic>> items) async {
@@ -230,6 +359,27 @@ class DatabaseHelper {
           SET stock_unidades = stock_unidades - ? 
           WHERE id = ?
         ''', [cantidad, productoId]);
+
+        final List<Map<String, dynamic>> pRes = await txn.query('productos', where: 'id = ?', whereArgs: [productoId]);
+        if (pRes.isNotEmpty) {
+          final p = pRes.first;
+          await SyncManager.instance.subirProducto(
+            productoId,
+            p['nombre'].toString(),
+            (p['precio_venta_unidad'] as num).toDouble(),
+            (p['stock_unidades'] as num).toInt(),
+          );
+        }
+
+        await SyncManager.instance.subirVenta(
+          productoId: productoId,
+          tipoVenta: 'UNIDAD',
+          cantidad: cantidad,
+          montoTotalCobrado: montoCobrado,
+          costoTotalAplicado: costoAplicado,
+          gananciaNeta: ganancia,
+          fecha: ahora,
+        );
       }
     });
   }
@@ -253,12 +403,17 @@ class DatabaseHelper {
 
     final double montoAdeudadoNuevo = cantidad * precioUnit;
     final double costoBaseNuevo = cantidad * costoUnit;
+    final fecha = DateTime.now().toIso8601String();
 
     final deudasExistentes = await db.query(
       'deudas',
       where: 'cliente_nombre = ? AND producto_id = ? AND estado = ?',
       whereArgs: [cliente, productoId, 'PENDIENTE'],
     );
+
+    int cantFinal = cantidad;
+    double montoFinal = montoAdeudadoNuevo;
+    double costoFinal = costoBaseNuevo;
 
     await db.transaction((txn) async {
       if (deudasExistentes.isNotEmpty) {
@@ -268,13 +423,17 @@ class DatabaseHelper {
         final double montoActual = (deudaExistente['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
         final double costoActual = (deudaExistente['costo_base'] as num?)?.toDouble() ?? 0.0;
 
+        cantFinal = cantActual + cantidad;
+        montoFinal = montoActual + montoAdeudadoNuevo;
+        costoFinal = costoActual + costoBaseNuevo;
+
         await txn.update(
           'deudas',
           {
-            'cantidad': cantActual + cantidad,
-            'monto_adeudado': montoActual + montoAdeudadoNuevo,
-            'costo_base': costoActual + costoBaseNuevo,
-            'fecha_creacion': DateTime.now().toIso8601String(),
+            'cantidad': cantFinal,
+            'monto_adeudado': montoFinal,
+            'costo_base': costoFinal,
+            'fecha_creacion': fecha,
           },
           where: 'id = ?',
           whereArgs: [idExistente],
@@ -288,7 +447,7 @@ class DatabaseHelper {
           'monto_adeudado': montoAdeudadoNuevo,
           'costo_base': costoBaseNuevo,
           'estado': 'PENDIENTE',
-          'fecha_creacion': DateTime.now().toIso8601String(),
+          'fecha_creacion': fecha,
         });
       }
 
@@ -298,6 +457,16 @@ class DatabaseHelper {
         WHERE id = ?
       ''', [unidadesADescontar, productoId]);
     });
+
+    await SyncManager.instance.subirDeuda(
+      cliente: cliente,
+      productoId: productoId,
+      cantidad: cantFinal,
+      montoAdeudado: montoFinal,
+      costoBase: costoFinal,
+      estado: 'PENDIENTE',
+      fecha: fecha,
+    );
   }
 
   Future<void> aumentarDeudaCliente({
@@ -325,6 +494,8 @@ class DatabaseHelper {
     final deuda = res.first;
     final double montoActual = (deuda['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
     final double nuevoMonto = (montoActual - montoARestar).clamp(0.0, double.infinity);
+    final String cliente = deuda['cliente_nombre'].toString();
+    final int productoId = deuda['producto_id'] as int;
 
     if (nuevoMonto <= 0.01) {
       await db.update(
@@ -333,12 +504,30 @@ class DatabaseHelper {
         where: 'id = ?',
         whereArgs: [deudaId],
       );
+      await SyncManager.instance.subirDeuda(
+        cliente: cliente,
+        productoId: productoId,
+        cantidad: 0,
+        montoAdeudado: 0.0,
+        costoBase: 0.0,
+        estado: 'PAGADO',
+        fecha: DateTime.now().toIso8601String(),
+      );
     } else {
       await db.update(
         'deudas',
         {'monto_adeudado': nuevoMonto},
         where: 'id = ?',
         whereArgs: [deudaId],
+      );
+      await SyncManager.instance.subirDeuda(
+        cliente: cliente,
+        productoId: productoId,
+        cantidad: (deuda['cantidad'] as num).toInt(),
+        montoAdeudado: nuevoMonto,
+        costoBase: (deuda['costo_base'] as num).toDouble(),
+        estado: 'PENDIENTE',
+        fecha: DateTime.now().toIso8601String(),
       );
     }
   }
@@ -435,6 +624,26 @@ class DatabaseHelper {
         'fecha': ahora,
       });
     });
+
+    await SyncManager.instance.subirDeuda(
+      cliente: deuda['cliente_nombre'].toString(),
+      productoId: deuda['producto_id'] as int,
+      cantidad: 0,
+      montoAdeudado: 0.0,
+      costoBase: 0.0,
+      estado: 'PAGADO',
+      fecha: ahora,
+    );
+
+    await SyncManager.instance.subirVenta(
+      productoId: deuda['producto_id'] as int,
+      tipoVenta: deuda['tipo_venta'].toString(),
+      cantidad: deuda['cantidad'] as int,
+      montoTotalCobrado: monto,
+      costoTotalAplicado: costo,
+      gananciaNeta: ganancia,
+      fecha: ahora,
+    );
   }
 
   Future<void> saldarDeudaParcial(int deudaId, double montoAbono) async {
@@ -477,6 +686,26 @@ class DatabaseHelper {
         'fecha': ahora,
       });
     });
+
+    await SyncManager.instance.subirDeuda(
+      cliente: deuda['cliente_nombre'].toString(),
+      productoId: deuda['producto_id'] as int,
+      cantidad: (deuda['cantidad'] as num).toInt(),
+      montoAdeudado: montoTotalDeuda - montoAbono,
+      costoBase: costoTotalDeuda - costoAbonado,
+      estado: 'PENDIENTE',
+      fecha: ahora,
+    );
+
+    await SyncManager.instance.subirVenta(
+      productoId: deuda['producto_id'] as int,
+      tipoVenta: deuda['tipo_venta'].toString(),
+      cantidad: 1,
+      montoTotalCobrado: montoAbono,
+      costoTotalAplicado: costoAbonado,
+      gananciaNeta: gananciaAbono,
+      fecha: ahora,
+    );
   }
 
   // --- CONSULTAS DASHBOARD, GRÁFICOS Y MESES ---
@@ -520,11 +749,14 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> obtenerVentasDelDia() async {
     final db = await database;
+    final now = DateTime.now();
+    final hoyLocalStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
     return await db.rawQuery('''
       SELECT v.*, p.nombre AS producto_nombre
       FROM ventas v
       INNER JOIN productos p ON v.producto_id = p.id
-      WHERE date(v.fecha) = date('now')
+      WHERE date(v.fecha) = '$hoyLocalStr'
       ORDER BY v.id DESC
     ''');
   }
@@ -536,7 +768,10 @@ class DatabaseHelper {
   }) async {
     final db = await database;
 
-    String whereHoy = "date(fecha) = date('now')";
+    final now = DateTime.now();
+    final hoyLocalStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+    String whereHoy = "date(fecha) = '$hoyLocalStr'";
     if (fechaFiltro != null) {
       final fStr = "${fechaFiltro.year}-${fechaFiltro.month.toString().padLeft(2, '0')}-${fechaFiltro.day.toString().padLeft(2, '0')}";
       whereHoy = "date(fecha) = '$fStr'";
@@ -556,10 +791,10 @@ class DatabaseHelper {
         COALESCE(SUM(monto_total_cobrado), 0) AS total_ventas,
         COALESCE(SUM(ganancia_neta), 0) AS ganancia_total
       FROM ventas 
-      WHERE date(fecha) >= date('now', '-7 days')
+      WHERE date(fecha) >= date('$hoyLocalStr', '-6 days')
     ''');
 
-    String whereMes = "strftime('%Y-%m', fecha) = strftime('%Y-%m', 'now')";
+    String whereMes = "strftime('%Y-%m', fecha) = '${now.year}-${now.month.toString().padLeft(2, '0')}'";
     if (mesFiltro != null && anioFiltro != null) {
       final mStr = mesFiltro.toString().padLeft(2, '0');
       whereMes = "strftime('%Y-%m', fecha) = '$anioFiltro-$mStr'";
@@ -614,13 +849,16 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> obtenerVentasPorDiaSemana() async {
     final db = await database;
+    final now = DateTime.now();
+    final hoyLocalStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
     return await db.rawQuery('''
       SELECT 
         date(fecha) AS fecha_dia,
         COALESCE(SUM(monto_total_cobrado), 0) AS total_ventas,
         COALESCE(SUM(ganancia_neta), 0) AS ganancia_total
       FROM ventas
-      WHERE date(fecha) >= date('now', '-6 days')
+      WHERE date(fecha) >= date('$hoyLocalStr', '-6 days')
       GROUP BY date(fecha)
       ORDER BY date(fecha) ASC
     ''');

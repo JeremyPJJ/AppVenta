@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'database/db_helper.dart';
+import 'database/firestore_helper.dart';
 
 final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(ThemeMode.dark);
 
@@ -124,6 +126,37 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
   ];
+
+  Timer? _midnightTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _iniciarTimerMedianoche();
+    SyncManager.instance.initFirebaseAndSync(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _iniciarTimerMedianoche() {
+    final now = DateTime.now();
+    final tomorrow = DateTime(now.year, now.month, now.day + 1);
+    final timeToMidnight = tomorrow.difference(now);
+
+    _midnightTimer?.cancel();
+    _midnightTimer = Timer(timeToMidnight + const Duration(seconds: 1), () {
+      if (mounted) {
+        setState(() {});
+        _iniciarTimerMedianoche();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _midnightTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
