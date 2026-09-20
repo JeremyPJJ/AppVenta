@@ -85,6 +85,96 @@ class DatabaseHelper {
         FOREIGN KEY (producto_id) REFERENCES productos (id) ON DELETE CASCADE
       )
     ''');
+
+    // 5. Configuración y preferencias (Modo oscuro, etc)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+  }
+
+  // --- PREFERENCIAS DE MODO OSCURO ---
+
+  Future<void> guardarModoOscuro(bool esOscuro) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+    await db.insert(
+      'configuracion',
+      {'clave': 'modo_oscuro', 'valor': esOscuro ? '1' : '0'},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<bool> obtenerModoOscuro() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+    final res = await db.query(
+      'configuracion',
+      where: 'clave = ?',
+      whereArgs: ['modo_oscuro'],
+    );
+    if (res.isNotEmpty) {
+      return res.first['valor'] == '1';
+    }
+    return true; // Predeterminado: Modo Oscuro
+  }
+
+  // --- CONFIGURACIÓN YAPE / QR ---
+
+  Future<void> guardarDatosYape({
+    required String nombre,
+    required String numero,
+    required String qrPath,
+  }) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+
+    await db.insert('configuracion', {'clave': 'yape_nombre', 'valor': nombre}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'yape_numero', 'valor': numero}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'yape_qr_path', 'valor': qrPath}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, String>> obtenerDatosYape() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+
+    final res = await db.query('configuracion');
+    final Map<String, String> datos = {
+      'yape_nombre': '',
+      'yape_numero': '',
+      'yape_qr_path': '',
+    };
+
+    for (var r in res) {
+      final clave = r['clave']?.toString();
+      final valor = r['valor']?.toString() ?? '';
+      if (clave != null && datos.containsKey(clave)) {
+        datos[clave] = valor;
+      }
+    }
+    return datos;
   }
 
   Future<void> borrarTodosLosDatos() async {
@@ -95,7 +185,7 @@ class DatabaseHelper {
       await txn.delete('compras');
       await txn.delete('productos');
     });
-    await SyncManager.instance.borrarTodoEnNube();
+    SyncManager.instance.borrarTodoEnNube();
   }
 
   // --- SINCRONIZACIÓN LOCAL DESDE NUBE ---
@@ -241,7 +331,7 @@ class DatabaseHelper {
       }
     });
 
-    await SyncManager.instance.subirProducto(productoId, nombre, precioVentaUnidad, stockInicialUnidades);
+    SyncManager.instance.subirProducto(productoId, nombre, precioVentaUnidad, stockInicialUnidades);
     return productoId;
   }
 
@@ -266,7 +356,7 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
-    await SyncManager.instance.subirProducto(id, nombre, precioVentaUnidad, stockUnidades);
+    SyncManager.instance.subirProducto(id, nombre, precioVentaUnidad, stockUnidades);
   }
 
   // --- VENTAS INMEDIATAS (INDIVIDUALES Y MÚLTIPLES) ---
@@ -314,14 +404,15 @@ class DatabaseHelper {
     });
 
     final int nuevoStock = ((producto['stock_unidades'] as num?)?.toInt() ?? 0) - cantidad;
-    await SyncManager.instance.subirProducto(
+
+    SyncManager.instance.subirProducto(
       productoId,
       producto['nombre'].toString(),
       precioUnit,
       nuevoStock,
     );
 
-    await SyncManager.instance.subirVenta(
+    SyncManager.instance.subirVenta(
       productoId: productoId,
       tipoVenta: tipoVenta,
       cantidad: cantidad,
@@ -363,7 +454,7 @@ class DatabaseHelper {
         final List<Map<String, dynamic>> pRes = await txn.query('productos', where: 'id = ?', whereArgs: [productoId]);
         if (pRes.isNotEmpty) {
           final p = pRes.first;
-          await SyncManager.instance.subirProducto(
+          SyncManager.instance.subirProducto(
             productoId,
             p['nombre'].toString(),
             (p['precio_venta_unidad'] as num).toDouble(),
@@ -371,7 +462,7 @@ class DatabaseHelper {
           );
         }
 
-        await SyncManager.instance.subirVenta(
+        SyncManager.instance.subirVenta(
           productoId: productoId,
           tipoVenta: 'UNIDAD',
           cantidad: cantidad,
@@ -458,7 +549,7 @@ class DatabaseHelper {
       ''', [unidadesADescontar, productoId]);
     });
 
-    await SyncManager.instance.subirDeuda(
+    SyncManager.instance.subirDeuda(
       cliente: cliente,
       productoId: productoId,
       cantidad: cantFinal,
@@ -504,7 +595,7 @@ class DatabaseHelper {
         where: 'id = ?',
         whereArgs: [deudaId],
       );
-      await SyncManager.instance.subirDeuda(
+      SyncManager.instance.subirDeuda(
         cliente: cliente,
         productoId: productoId,
         cantidad: 0,
@@ -520,7 +611,7 @@ class DatabaseHelper {
         where: 'id = ?',
         whereArgs: [deudaId],
       );
-      await SyncManager.instance.subirDeuda(
+      SyncManager.instance.subirDeuda(
         cliente: cliente,
         productoId: productoId,
         cantidad: (deuda['cantidad'] as num).toInt(),
@@ -625,7 +716,7 @@ class DatabaseHelper {
       });
     });
 
-    await SyncManager.instance.subirDeuda(
+    SyncManager.instance.subirDeuda(
       cliente: deuda['cliente_nombre'].toString(),
       productoId: deuda['producto_id'] as int,
       cantidad: 0,
@@ -635,7 +726,7 @@ class DatabaseHelper {
       fecha: ahora,
     );
 
-    await SyncManager.instance.subirVenta(
+    SyncManager.instance.subirVenta(
       productoId: deuda['producto_id'] as int,
       tipoVenta: deuda['tipo_venta'].toString(),
       cantidad: deuda['cantidad'] as int,
@@ -687,7 +778,7 @@ class DatabaseHelper {
       });
     });
 
-    await SyncManager.instance.subirDeuda(
+    SyncManager.instance.subirDeuda(
       cliente: deuda['cliente_nombre'].toString(),
       productoId: deuda['producto_id'] as int,
       cantidad: (deuda['cantidad'] as num).toInt(),
@@ -697,7 +788,7 @@ class DatabaseHelper {
       fecha: ahora,
     );
 
-    await SyncManager.instance.subirVenta(
+    SyncManager.instance.subirVenta(
       productoId: deuda['producto_id'] as int,
       tipoVenta: deuda['tipo_venta'].toString(),
       cantidad: 1,
@@ -834,7 +925,7 @@ class DatabaseHelper {
     final res = await db.rawQuery('''
       SELECT 
         COALESCE(SUM(monto_total_cobrado), 0) AS total_ventas,
-        COALESCE(SUM(ganancia_neta), 0) AS ganancia_total,
+        COALESCE(SUM(ganancia_total), 0) AS ganancia_total,
         COALESCE(SUM(cantidad), 0) AS unidades_vendidas
       FROM ventas 
       WHERE strftime('%Y-%m', fecha) = ?

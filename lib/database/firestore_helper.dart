@@ -28,6 +28,37 @@ class SyncManager {
     }
   }
 
+  Future<Map<String, dynamic>?> obtenerControlVersionNube() async {
+    if (!_initialized) return null;
+    try {
+      final docRef = FirebaseFirestore.instance.collection('configuracion_app').doc('version_control');
+      final doc = await docRef.get();
+
+      final configInicial = {
+        'version_minima_code': 1,
+        'version_minima_nombre': '1.0.0',
+        'actualizacion_forzada': false,
+        'mensaje_actualizacion': 'Hemos realizado mejoras importantes en la aplicación. Por favor actualiza a la última versión para continuar usándola.',
+        'url_descarga': '',
+      };
+
+      if (!doc.exists) {
+        await docRef.set(configInicial);
+        return configInicial;
+      } else {
+        final data = doc.data()!;
+        final int minCode = (data['version_minima_code'] as num?)?.toInt() ?? 1;
+        if (minCode <= 1 && data['actualizacion_forzada'] == true) {
+          await docRef.update({'actualizacion_forzada': false});
+          data['actualizacion_forzada'] = false;
+        }
+        return data;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _sincronizarTodoInicial(Function() onDataChanged) async {
     try {
       final prods = await FirebaseFirestore.instance.collection('productos').get();

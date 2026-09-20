@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'database/db_helper.dart';
 import 'database/firestore_helper.dart';
 
 final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(ThemeMode.dark);
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final esOscuro = await DatabaseHelper.instance.obtenerModoOscuro();
+  themeModeNotifier.value = esOscuro ? ThemeMode.dark : ThemeMode.light;
   runApp(const MyApp());
 }
 
@@ -135,7 +140,97 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
     _iniciarTimerMedianoche();
     SyncManager.instance.initFirebaseAndSync(() {
       if (mounted) setState(() {});
+      _verificarActualizacionForzada();
     });
+  }
+
+  void _verificarActualizacionForzada() async {
+    final config = await SyncManager.instance.obtenerControlVersionNube();
+    if (config != null && mounted) {
+      final int minCode = (config['version_minima_code'] as num?)?.toInt() ?? 1;
+      final bool forzada = config['actualizacion_forzada'] == true;
+      final String mensaje = config['mensaje_actualizacion']?.toString() ??
+          'Hemos realizado mejoras importantes en la aplicación. Por favor actualiza a la última versión para continuar usándola.';
+
+      int currentVersionCode = 1;
+      try {
+        final packageInfo = await PackageInfo.fromPlatform();
+        currentVersionCode = int.tryParse(packageInfo.buildNumber) ?? 1;
+      } catch (_) {}
+
+      if (forzada && minCode > currentVersionCode) {
+        _mostrarModalActualizacionForzada(mensaje);
+      }
+    }
+  }
+
+  void _mostrarModalActualizacionForzada(String mensaje) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: const [
+              Icon(Icons.system_update_rounded, color: Color(0xFF2563EB), size: 30),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '¡Actualización Necesaria!',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                mensaje,
+                style: const TextStyle(fontSize: 14, height: 1.4),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E293B),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Debes actualizar la aplicación para continuar usándola.',
+                        style: TextStyle(fontSize: 12, color: Colors.amber),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.download),
+                label: const Text('Descargar Actualización', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () {},
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _iniciarTimerMedianoche() {
@@ -224,6 +319,16 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
         ],
       ),
       body: pantallas[_pestanaActual],
+      floatingActionButton: FloatingActionButton(
+        shape: const CircleBorder(),
+        backgroundColor: const Color(0xFF702082),
+        foregroundColor: Colors.white,
+        elevation: 6,
+        tooltip: 'Ver QR Yape',
+        onPressed: _modalMostrarQrYape,
+        child: const Icon(Icons.qr_code_2, size: 28),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _pestanaActual,
         onDestinationSelected: (index) => setState(() => _pestanaActual = index),
@@ -265,11 +370,22 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                     title: const Text('Modo Oscuro', style: TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Text(esOscuro ? 'Activado' : 'Desactivado'),
                     value: esOscuro,
-                    onChanged: (val) {
+                    onChanged: (val) async {
                       setModalState(() {
                         themeModeNotifier.value = val ? ThemeMode.dark : ThemeMode.light;
                       });
+                      await dbHelper.guardarModoOscuro(val);
                       setState(() {});
+                    },
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.qr_code_2, color: Color(0xFF702082)),
+                    title: const Text('Configurar Yape / QR', style: TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Editar titular, número e imagen del QR'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _modalConfigurarYape();
                     },
                   ),
                   const Divider(),
@@ -286,6 +402,270 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('Cerrar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _modalMostrarQrYape() async {
+    final datosYape = await dbHelper.obtenerDatosYape();
+    if (!mounted) return;
+
+    final String nombre = datosYape['yape_nombre'] ?? '';
+    final String numero = datosYape['yape_numero'] ?? '';
+    final String qrPath = datosYape['yape_qr_path'] ?? '';
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final bool esModoOscuro = themeModeNotifier.value == ThemeMode.dark;
+
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: Container(
+            width: 380,
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                  decoration: BoxDecoration(
+                    color: esModoOscuro ? const Color(0xFF11182D) : Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: esModoOscuro ? const Color(0xFF334155) : Colors.grey.shade300,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.2),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      if (nombre.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 14),
+                          child: Text(
+                            nombre,
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: esModoOscuro ? const Color(0xFFA78BFA) : const Color(0xFF702082),
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      if (qrPath.isNotEmpty && File(qrPath).existsSync())
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: Container(
+                            width: 250,
+                            height: 250,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Transform.scale(
+                              scale: 1.45,
+                              child: Image.file(
+                                File(qrPath),
+                                fit: BoxFit.cover,
+                                alignment: Alignment.center,
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        Container(
+                          height: 220,
+                          width: 220,
+                          decoration: BoxDecoration(
+                            color: esModoOscuro ? const Color(0xFF1E293B) : Colors.purple.shade50,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: esModoOscuro ? const Color(0xFF5B21B6) : Colors.purple.shade200),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.qr_code_2, size: 90, color: Color(0xFF8B5CF6)),
+                              SizedBox(height: 8),
+                              Text(
+                                'Sin Imagen QR',
+                                style: TextStyle(color: Color(0xFF8B5CF6), fontWeight: FontWeight.bold, fontSize: 15),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (numero.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        Text(
+                          '📱 $numero',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: esModoOscuro ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF702082),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _modalConfigurarYape() async {
+    final datosYape = await dbHelper.obtenerDatosYape();
+    if (!mounted) return;
+
+    final nombreCtrl = TextEditingController(text: datosYape['yape_nombre'] ?? '');
+    final numeroCtrl = TextEditingController(text: datosYape['yape_numero'] ?? '');
+    String qrPathActual = datosYape['yape_qr_path'] ?? '';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return AlertDialog(
+            title: Row(
+              children: const [
+                Icon(Icons.qr_code_2, color: Color(0xFF702082)),
+                SizedBox(width: 8),
+                Expanded(child: Text('Configurar Yape / QR')),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nombreCtrl,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: const InputDecoration(
+                      labelText: 'Nombre del titular Yape',
+                      hintText: 'Ej: Jorge Jeremy Paredes Perez',
+                      prefixIcon: Icon(Icons.person),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: numeroCtrl,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Número de celular Yape',
+                      hintText: 'Ej: 912 345 678',
+                      prefixIcon: Icon(Icons.phone_android),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Imagen del Código QR Yape:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  ),
+                  const SizedBox(height: 8),
+                  if (qrPathActual.isNotEmpty && File(qrPathActual).existsSync())
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.file(
+                        File(qrPathActual),
+                        height: 160,
+                        fit: BoxFit.contain,
+                      ),
+                    )
+                  else
+                    Container(
+                      height: 120,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.purple.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.purple.shade200),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.image_outlined, size: 40, color: Color(0xFF702082)),
+                          SizedBox(height: 4),
+                          Text('Sin imagen de QR seleccionada', style: TextStyle(fontSize: 12, color: Color(0xFF702082))),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF702082),
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Seleccionar Imagen QR'),
+                    onPressed: () async {
+                      final picker = ImagePicker();
+                      final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+                      if (pickedFile != null) {
+                        setModalState(() {
+                          qrPathActual = pickedFile.path;
+                        });
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF702082),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () async {
+                  final nav = Navigator.of(ctx);
+                  final messenger = ScaffoldMessenger.of(context);
+                  await dbHelper.guardarDatosYape(
+                    nombre: nombreCtrl.text.trim(),
+                    numero: numeroCtrl.text.trim(),
+                    qrPath: qrPathActual,
+                  );
+                  nav.pop();
+                  if (mounted) {
+                    messenger.showSnackBar(
+                      const SnackBar(
+                        content: Text('Datos y QR de Yape actualizados correctamente'),
+                        backgroundColor: Color(0xFF702082),
+                      ),
+                    );
+                    setState(() {});
+                  }
+                },
+                child: const Text('Guardar Cambios'),
               ),
             ],
           );
@@ -1486,8 +1866,10 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                               : () async {
                                   final nav = Navigator.of(ctx);
                                   final messenger = ScaffoldMessenger.of(context);
-                                  await dbHelper.registrarVentaMultiple(itemsAVender);
-                                  nav.pop();
+                                  try {
+                                    await dbHelper.registrarVentaMultiple(itemsAVender);
+                                  } catch (_) {}
+                                  if (ctx.mounted) nav.pop();
                                   if (mounted) {
                                     messenger.showSnackBar(
                                       SnackBar(
@@ -1594,12 +1976,14 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                     : () async {
                         final nav = Navigator.of(ctx);
                         final messenger = ScaffoldMessenger.of(context);
-                        await dbHelper.registrarVentaDirecta(
-                          productoId: prod['id'] as int,
-                          tipoVenta: 'UNIDAD',
-                          cantidad: cantidad,
-                        );
-                        nav.pop();
+                        try {
+                          await dbHelper.registrarVentaDirecta(
+                            productoId: prod['id'] as int,
+                            tipoVenta: 'UNIDAD',
+                            cantidad: cantidad,
+                          );
+                        } catch (_) {}
+                        if (ctx.mounted) nav.pop();
                         if (mounted) {
                           messenger.showSnackBar(
                             SnackBar(
@@ -1770,7 +2154,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
 
           double totalDeuda = 0.0;
           for (var item in items) {
-            totalDeuda += (item['monto_adeudado'] as num).toDouble();
+            totalDeuda += (item['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
           }
 
           return AlertDialog(
@@ -1839,7 +2223,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                         ],
                       ),
                       ...items.map((item) {
-                        final double subtotal = (item['monto_adeudado'] as num).toDouble();
+                        final double subtotal = (item['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
                         return TableRow(
                           children: [
                             Padding(padding: const EdgeInsets.all(8), child: Text(item['producto_nombre'].toString())),
@@ -1919,8 +2303,8 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
             orElse: () => itemsDeuda.first,
           );
 
-          final int cantidadAdeudadaItem = (itemActual['cantidad'] as num).toInt();
-          final double montoItemActual = (itemActual['monto_adeudado'] as num).toDouble();
+          final int cantidadAdeudadaItem = (itemActual['cantidad'] as num?)?.toInt() ?? 0;
+          final double montoItemActual = (itemActual['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
           final double precioUnit = cantidadAdeudadaItem > 0 ? (montoItemActual / cantidadAdeudadaItem) : 0.0;
 
           final int unidadesARestar = int.tryParse(unidadesCtrl.text) ?? 1;
@@ -1944,8 +2328,8 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                       border: OutlineInputBorder(),
                     ),
                     items: itemsDeuda.map((item) {
-                      final double m = (item['monto_adeudado'] as num).toDouble();
-                      final int c = (item['cantidad'] as num).toInt();
+                      final double m = (item['monto_adeudado'] as num?)?.toDouble() ?? 0.0;
+                      final int c = (item['cantidad'] as num?)?.toInt() ?? 0;
                       return DropdownMenuItem<int>(
                         value: item['id'] as int,
                         child: Text('${item['producto_nombre']} ($c u. - S/ ${m.toStringAsFixed(2)})'),
@@ -2246,7 +2630,11 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                 children: [
                   Text(
                     'Deuda pendiente: S/ ${montoTotalDeuda.toStringAsFixed(2)}',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orangeAccent),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: esModoOscuro ? Colors.orangeAccent : Colors.orange.shade900,
+                    ),
                   ),
                   const SizedBox(height: 16),
                   SegmentedButton<bool>(
@@ -2403,6 +2791,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                   const SizedBox(height: 12),
                   DropdownButtonFormField<int>(
                     initialValue: productoSeleccionadoId,
+                    isExpanded: true,
                     decoration: const InputDecoration(
                       labelText: 'Producto',
                       prefixIcon: Icon(Icons.inventory_2),
