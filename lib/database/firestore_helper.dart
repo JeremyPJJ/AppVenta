@@ -29,8 +29,11 @@ class SyncManager {
   }
 
   Future<Map<String, dynamic>?> obtenerControlVersionNube() async {
-    if (!_initialized) return null;
     try {
+      if (!_initialized) {
+        await Firebase.initializeApp();
+        _initialized = true;
+      }
       final docRef = FirebaseFirestore.instance.collection('configuracion_app').doc('version_control');
       final doc = await docRef.get();
 
@@ -45,15 +48,8 @@ class SyncManager {
       if (!doc.exists) {
         await docRef.set(configInicial);
         return configInicial;
-      } else {
-        final data = doc.data()!;
-        final int minCode = (data['version_minima_code'] as num?)?.toInt() ?? 1;
-        if (minCode <= 1 && data['actualizacion_forzada'] == true) {
-          await docRef.update({'actualizacion_forzada': false});
-          data['actualizacion_forzada'] = false;
-        }
-        return data;
       }
+      return doc.data();
     } catch (_) {
       return null;
     }
