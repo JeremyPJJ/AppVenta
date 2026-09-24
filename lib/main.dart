@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:ota_update/ota_update.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'database/db_helper.dart';
 import 'database/firestore_helper.dart';
 
@@ -12,13 +15,22 @@ final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(ThemeMode.dark)
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final esOscuro = await DatabaseHelper.instance.obtenerModoOscuro();
+  final db = DatabaseHelper.instance;
+  final esOscuro = await db.obtenerModoOscuro();
   themeModeNotifier.value = esOscuro ? ThemeMode.dark : ThemeMode.light;
-  runApp(const MyApp());
+
+  final sesionActiva = await db.obtenerSesionActiva();
+
+  runApp(MyApp(sesionInicial: sesionActiva));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final Map<String, dynamic>? sesionInicial;
+
+  const MyApp({
+    super.key,
+    this.sesionInicial,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -60,9 +72,427 @@ class MyApp extends StatelessWidget {
               indicatorColor: Color(0xFF2563EB),
             ),
           ),
-          home: const PantallaPrincipal(),
+          home: PantallaSplashScreen(sesionInicial: sesionInicial),
         );
       },
+    );
+  }
+}
+
+// --- PANTALLA ANIMADA DE BIENVENIDA (SPLASH SCREEN) ---
+
+class PantallaSplashScreen extends StatefulWidget {
+  final Map<String, dynamic>? sesionInicial;
+
+  const PantallaSplashScreen({
+    super.key,
+    this.sesionInicial,
+  });
+
+  @override
+  State<PantallaSplashScreen> createState() => _PantallaSplashScreenState();
+}
+
+class _PantallaSplashScreenState extends State<PantallaSplashScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.4, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeOutBack),
+    );
+
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeIn),
+    );
+
+    _controller.forward();
+
+    Timer(const Duration(milliseconds: 1800), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 700),
+          pageBuilder: (context, anim1, anim2) => widget.sesionInicial != null
+              ? PantallaPrincipal(usuarioActual: widget.sesionInicial!)
+              : const PantallaLogin(),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.94, end: 1.0).animate(
+                  CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+                ),
+                child: child,
+              ),
+            );
+          },
+        ),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool esModoOscuro = themeModeNotifier.value == ThemeMode.dark;
+
+    return Scaffold(
+      backgroundColor: esModoOscuro ? const Color(0xFF0B101D) : Colors.indigo.shade50,
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            return FadeTransition(
+              opacity: _fadeAnimation,
+              child: ScaleTransition(
+                scale: _scaleAnimation,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(22),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF2563EB), Color(0xFF6366F1)],
+                        ),
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF3B82F6).withValues(alpha: 0.5),
+                            blurRadius: 30,
+                            spreadRadius: 6,
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.storefront, color: Colors.white, size: 55),
+                    ),
+                    const SizedBox(height: 24),
+                    RichText(
+                      text: TextSpan(
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: esModoOscuro ? Colors.white : Colors.black87,
+                          letterSpacing: 0.5,
+                        ),
+                        children: const [
+                          TextSpan(text: 'Control de '),
+                          TextSpan(
+                            text: 'Ventas',
+                            style: TextStyle(color: Color(0xFF60A5FA)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Cargando tu negocio...',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: esModoOscuro ? Colors.grey.shade400 : Colors.indigo.shade900,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 36),
+                    const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        color: Color(0xFF2563EB),
+                        strokeWidth: 2.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// --- PANTALLA ANIMADA DE INICIO DE SESIÓN ---
+
+class PantallaLogin extends StatefulWidget {
+  const PantallaLogin({super.key});
+
+  @override
+  State<PantallaLogin> createState() => _PantallaLoginState();
+}
+
+class _PantallaLoginState extends State<PantallaLogin>
+    with SingleTickerProviderStateMixin {
+  final _usuarioCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
+  bool _mostrarPassword = false;
+  bool _cargando = false;
+
+  late AnimationController _loginController;
+  late Animation<double> _scaleAnim;
+  late Animation<double> _fadeAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _loginController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+
+    _scaleAnim = Tween<double>(begin: 0.88, end: 1.0).animate(
+      CurvedAnimation(parent: _loginController, curve: Curves.easeOutBack),
+    );
+
+    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _loginController, curve: Curves.easeIn),
+    );
+
+    _loginController.forward();
+  }
+
+  @override
+  void dispose() {
+    _loginController.dispose();
+    super.dispose();
+  }
+
+  String _estadoCargaTexto = 'Iniciando sesión...';
+
+  void _iniciarSesion() async {
+    final userText = _usuarioCtrl.text.trim();
+    final passText = _passwordCtrl.text.trim();
+
+    if (userText.isEmpty || passText.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Por favor ingresa tu usuario y contraseña'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _cargando = true;
+      _estadoCargaTexto = 'Verificando credenciales...';
+    });
+
+    final userMap = await DatabaseHelper.instance.autenticarUsuario(userText, passText);
+
+    if (userMap == null) {
+      setState(() => _cargando = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Usuario o contraseña incorrectos'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    // Sequencia animada de 3 segundos
+    setState(() => _estadoCargaTexto = 'Iniciando sesión...');
+    await Future.delayed(const Duration(milliseconds: 1000));
+
+    if (mounted) setState(() => _estadoCargaTexto = 'Sincronizando datos...');
+    await Future.delayed(const Duration(milliseconds: 1000));
+
+    if (mounted) setState(() => _estadoCargaTexto = '¡Bienvenido, ${userMap['usuario']}!');
+    await Future.delayed(const Duration(milliseconds: 1000));
+
+    if (!mounted) return;
+
+    await DatabaseHelper.instance.guardarSesionActiva(
+      usuario: userMap['usuario'].toString(),
+      rol: userMap['rol'].toString(),
+    );
+
+    if (!mounted) return;
+
+    Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 800),
+        pageBuilder: (context, anim1, anim2) => PantallaPrincipal(usuarioActual: userMap),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.90, end: 1.0).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              ),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool esModoOscuro = themeModeNotifier.value == ThemeMode.dark;
+
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          child: AnimatedBuilder(
+            animation: _loginController,
+            builder: (context, child) {
+              return FadeTransition(
+                opacity: _fadeAnim,
+                child: ScaleTransition(
+                  scale: _scaleAnim,
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 400),
+                    padding: const EdgeInsets.all(28),
+                    decoration: BoxDecoration(
+                      color: esModoOscuro ? const Color(0xFF11182D) : Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: esModoOscuro ? const Color(0xFF1E293B) : Colors.indigo.shade100,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.15),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFF2563EB), Color(0xFF6366F1)],
+                            ),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF3B82F6).withValues(alpha: 0.4),
+                                blurRadius: 15,
+                                spreadRadius: 2,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.storefront, color: Colors.white, size: 40),
+                        ),
+                        const SizedBox(height: 20),
+
+                        RichText(
+                          text: TextSpan(
+                            style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: esModoOscuro ? Colors.white : Colors.black87,
+                            ),
+                            children: const [
+                              TextSpan(text: 'Control de '),
+                              TextSpan(text: 'Ventas', style: TextStyle(color: Color(0xFF60A5FA))),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Ingresa a tu cuenta para continuar',
+                          style: TextStyle(fontSize: 13, color: Colors.grey.shade400),
+                        ),
+                        const SizedBox(height: 28),
+
+                        TextField(
+                          controller: _usuarioCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Usuario',
+                            hintText: 'Ej: admin',
+                            prefixIcon: Icon(Icons.person_outline),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.all(Radius.circular(12)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
+                        TextField(
+                          controller: _passwordCtrl,
+                          obscureText: !_mostrarPassword,
+                          decoration: InputDecoration(
+                            labelText: 'Contraseña',
+                            prefixIcon: const Icon(Icons.lock_outline),
+                            suffixIcon: IconButton(
+                              icon: Icon(_mostrarPassword ? Icons.visibility_off : Icons.visibility),
+                              onPressed: () => setState(() => _mostrarPassword = !_mostrarPassword),
+                            ),
+                            border: const OutlineInputBorder(
+                              borderRadius: BorderRadius.all(Radius.circular(12)),
+                            ),
+                          ),
+                          onSubmitted: (_) => _iniciarSesion(),
+                        ),
+                        const SizedBox(height: 24),
+
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              elevation: 4,
+                            ),
+                            onPressed: _cargando ? null : _iniciarSesion,
+                            child: _cargando
+                                ? Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.2),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        _estadoCargaTexto,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  )
+                                : const Text(
+                                    'Iniciar Sesión',
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 }
@@ -81,7 +511,6 @@ class MiniSparklinePainter extends CustomPainter {
       size.width, size.height * 0.1,
     );
 
-    // Relleno degradado suave debajo de la curva
     final fillPath = Path.from(path)
       ..lineTo(size.width, size.height)
       ..lineTo(0, size.height)
@@ -99,7 +528,6 @@ class MiniSparklinePainter extends CustomPainter {
 
     canvas.drawPath(fillPath, fillPaint);
 
-    // Línea de la curva
     final strokePaint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
@@ -113,10 +541,13 @@ class MiniSparklinePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-
-
 class PantallaPrincipal extends StatefulWidget {
-  const PantallaPrincipal({super.key});
+  final Map<String, dynamic> usuarioActual;
+
+  const PantallaPrincipal({
+    super.key,
+    required this.usuarioActual,
+  });
 
   @override
   State<PantallaPrincipal> createState() => _PantallaPrincipalState();
@@ -138,6 +569,8 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
 
   Timer? _midnightTimer;
 
+  bool get esAdmin => widget.usuarioActual['rol'] == 'ADMIN';
+
   @override
   void initState() {
     super.initState();
@@ -157,6 +590,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
       final bool forzada = config['actualizacion_forzada'] == true;
       final String mensaje = config['mensaje_actualizacion']?.toString() ??
           'Hemos realizado mejoras importantes en la aplicación. Por favor actualiza a la última versión para continuar usándola.';
+      final String urlDescarga = config['url_descarga']?.toString() ?? '';
 
       int currentVersionCode = 1;
       try {
@@ -165,79 +599,156 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
       } catch (_) {}
 
       if (forzada && minCode > currentVersionCode) {
-        _mostrarModalActualizacionForzada(mensaje);
+        _mostrarModalActualizacionForzada(mensaje, urlDescarga);
       }
     }
   }
 
-  void _mostrarModalActualizacionForzada(String mensaje) {
+  void _mostrarModalActualizacionForzada(String mensaje, String urlDescarga) {
+    bool descargando = false;
+    String estadoDescarga = '';
+    double progresoDescarga = 0.0;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
-        child: PopScope(
-          canPop: false,
-          child: AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Row(
-              children: const [
-                Icon(Icons.system_update_rounded, color: Color(0xFF2563EB), size: 30),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '¡Actualización Necesaria!',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
+            child: PopScope(
+              canPop: false,
+              child: AlertDialog(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                title: Row(
+                  children: const [
+                    Icon(Icons.system_update_rounded, color: Color(0xFF2563EB), size: 30),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '¡Actualización Necesaria!',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  mensaje,
-                  style: const TextStyle(fontSize: 14, height: 1.4),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E293B),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.amber, size: 20),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Debes actualizar la aplicación para continuar usándola.',
-                          style: TextStyle(fontSize: 12, color: Colors.amber),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      mensaje,
+                      style: const TextStyle(fontSize: 14, height: 1.4),
+                    ),
+                    const SizedBox(height: 16),
+                    if (descargando) ...[
+                      LinearProgressIndicator(
+                        value: progresoDescarga > 0 ? progresoDescarga : null,
+                        backgroundColor: Colors.grey.shade800,
+                        color: const Color(0xFF3B82F6),
+                        minHeight: 8,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        estadoDescarga,
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF60A5FA)),
+                      ),
+                      const SizedBox(height: 12),
+                    ] else
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E293B),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Debes actualizar la aplicación para continuar usándola.',
+                                style: TextStyle(fontSize: 12, color: Colors.amber),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                  ],
                 ),
-              ],
-            ),
-            actions: [
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2563EB),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
+                actions: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2563EB),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      icon: Icon(descargando ? Icons.downloading : Icons.download),
+                      label: Text(
+                        descargando ? 'Descargando...' : 'Descargar e Instalar',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: descargando
+                          ? null
+                          : () async {
+                              final urlLimpia = urlDescarga.trim();
+                              if (urlLimpia.isNotEmpty) {
+                                try {
+                                  setModalState(() {
+                                    descargando = true;
+                                    estadoDescarga = 'Iniciando descarga...';
+                                    progresoDescarga = 0.0;
+                                  });
+
+                                  OtaUpdate()
+                                      .execute(urlLimpia, destinationFilename: 'Ventas_update.apk')
+                                      .listen(
+                                    (OtaEvent event) {
+                                      setModalState(() {
+                                        if (event.status == OtaStatus.DOWNLOADING) {
+                                          final double p = (double.tryParse(event.value ?? '0') ?? 0.0) / 100.0;
+                                          progresoDescarga = p.clamp(0.0, 1.0);
+                                          estadoDescarga = 'Descargando nueva versión: ${(progresoDescarga * 100).toInt()}%';
+                                        } else if (event.status == OtaStatus.INSTALLING) {
+                                          estadoDescarga = 'Abriendo instalador nativo...';
+                                        } else if (event.status == OtaStatus.PERMISSION_NOT_GRANTED_ERROR) {
+                                          estadoDescarga = 'Ocurrió un error de permisos';
+                                          descargando = false;
+                                        } else {
+                                          descargando = false;
+                                        }
+                                      });
+                                    },
+                                    onError: (e) async {
+                                      setModalState(() => descargando = false);
+                                      final uri = Uri.parse(urlLimpia);
+                                      if (await canLaunchUrl(uri)) {
+                                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                      }
+                                    },
+                                  );
+                                } catch (_) {
+                                  setModalState(() => descargando = false);
+                                  final uri = Uri.parse(urlLimpia);
+                                  if (await canLaunchUrl(uri)) {
+                                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  }
+                                }
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('No hay enlace de APK configurado en la nube')),
+                                );
+                              }
+                            },
+                    ),
                   ),
-                  icon: const Icon(Icons.download),
-                  label: const Text('Descargar Actualización', style: TextStyle(fontWeight: FontWeight.bold)),
-                  onPressed: () {},
-                ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -266,12 +777,18 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
   Widget build(BuildContext context) {
     final bool esModoOscuro = themeModeNotifier.value == ThemeMode.dark;
 
-    final List<Widget> pantallas = [
-      _vistaDashboard(),
-      _vistaVender(),
-      _vistaProductos(),
-      _vistaDeudas(),
-    ];
+    final List<Widget> pantallas = esAdmin
+        ? [
+            _vistaDashboard(),
+            _vistaVender(),
+            _vistaProductos(),
+            _vistaDeudas(),
+          ]
+        : [
+            _vistaDashboard(),
+            _vistaVender(),
+            _vistaDeudas(),
+          ];
 
     return Scaffold(
       appBar: AppBar(
@@ -313,6 +830,37 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
           ],
         ),
         actions: [
+          InkWell(
+            onTap: _modalMostrarQrYape,
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: esModoOscuro ? const Color(0xFF1E1035) : Colors.purple.shade50,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.8),
+                  width: 1.5,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Icon(Icons.qr_code_2, size: 20, color: Color(0xFFA78BFA)),
+                  SizedBox(width: 4),
+                  Text(
+                    'QR',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFA78BFA),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           Container(
             margin: const EdgeInsets.only(right: 12),
             decoration: BoxDecoration(
@@ -320,39 +868,50 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
               shape: BoxShape.circle,
             ),
             child: IconButton(
-              icon: const Icon(Icons.settings, size: 22),
+              icon: const Icon(Icons.settings, size: 20),
               tooltip: 'Configuración',
               onPressed: _modalConfiguracion,
             ),
           ),
         ],
       ),
-      body: pantallas[_pestanaActual],
-      floatingActionButton: FloatingActionButton(
-        shape: const CircleBorder(),
-        backgroundColor: const Color(0xFF702082),
-        foregroundColor: Colors.white,
-        elevation: 6,
-        tooltip: 'Ver QR Yape',
-        onPressed: _modalMostrarQrYape,
-        child: const Icon(Icons.qr_code_2, size: 28),
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        switchInCurve: Curves.easeOut,
+        switchOutCurve: Curves.easeIn,
+        child: pantallas[_pestanaActual.clamp(0, pantallas.length - 1)],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _pestanaActual,
+        selectedIndex: _pestanaActual.clamp(0, pantallas.length - 1),
         onDestinationSelected: (index) => setState(() => _pestanaActual = index),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard_customize), label: 'Ganancias'),
-          NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'Vender'),
-          NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Productos'),
-          NavigationDestination(icon: Icon(Icons.person_outline), label: 'Deudas'),
-        ],
+        destinations: esAdmin
+            ? const [
+                NavigationDestination(icon: Icon(Icons.dashboard_customize), label: 'Ganancias'),
+                NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'Vender'),
+                NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Productos'),
+                NavigationDestination(icon: Icon(Icons.person_outline), label: 'Deudas'),
+              ]
+            : const [
+                NavigationDestination(icon: Icon(Icons.dashboard_customize), label: 'Ganancias'),
+                NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'Vender'),
+                NavigationDestination(icon: Icon(Icons.person_outline), label: 'Deudas'),
+              ],
       ),
     );
   }
 
   // --- CONFIGURACIÓN Y MODO OSCURO ---
-  void _modalConfiguracion() {
+  void _modalConfiguracion() async {
+    String versionNombre = '1.0.4';
+    String versionBuild = '4';
+    try {
+      final info = await PackageInfo.fromPlatform();
+      versionNombre = info.version;
+      versionBuild = info.buildNumber;
+    } catch (_) {}
+
+    if (!mounted) return;
+
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -387,28 +946,62 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                       setState(() {});
                     },
                   ),
+
+                  if (esAdmin) ...[
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.person_add, color: Colors.teal),
+                      title: const Text('Crear Usuario Normal', style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('Registrar vendedor con acceso restringido'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _modalCrearUsuarioNormal();
+                      },
+                    ),
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.qr_code_2, color: Color(0xFF702082)),
+                      title: const Text('Configurar Yape / QR', style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('Editar titular, número e imagen del QR'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _modalConfigurarYape();
+                      },
+                    ),
+                    const Divider(),
+                    ListTile(
+                      leading: const Icon(Icons.delete_forever, color: Colors.red),
+                      title: const Text('Borrar todos los datos', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                      subtitle: const Text('Restablecer productos, ventas y deudas'),
+                      onTap: _modalConfirmarBorrarTodo,
+                    ),
+                  ],
+
                   const Divider(),
                   ListTile(
-                    leading: const Icon(Icons.qr_code_2, color: Color(0xFF702082)),
-                    title: const Text('Configurar Yape / QR', style: TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: const Text('Editar titular, número e imagen del QR'),
-                    onTap: () {
+                    leading: const Icon(Icons.logout, color: Colors.orangeAccent),
+                    title: const Text('Cerrar Sesión', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                    subtitle: Text('Usuario: ${widget.usuarioActual['usuario']} (${widget.usuarioActual['rol']})'),
+                    onTap: () async {
+                      final mainNav = Navigator.of(context);
                       Navigator.pop(ctx);
-                      _modalConfigurarYape();
+                      await dbHelper.cerrarSesionActiva();
+                      mainNav.pushReplacement(
+                        PageRouteBuilder(
+                          transitionDuration: const Duration(milliseconds: 600),
+                          pageBuilder: (context, anim1, anim2) => const PantallaLogin(),
+                          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                            return FadeTransition(opacity: animation, child: child);
+                          },
+                        ),
+                      );
                     },
                   ),
                   const Divider(),
                   ListTile(
-                    leading: const Icon(Icons.delete_forever, color: Colors.red),
-                    title: const Text('Borrar todos los datos', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
-                    subtitle: const Text('Restablecer productos, ventas y deudas'),
-                    onTap: _modalConfirmarBorrarTodo,
-                  ),
-                  const Divider(),
-                  const ListTile(
-                    leading: Icon(Icons.info_outline, color: Color(0xFF3B82F6)),
-                    title: Text('Versión Instalada', style: TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('Versión 1.0.2 (Build 3)'),
+                    leading: const Icon(Icons.info_outline, color: Color(0xFF3B82F6)),
+                    title: const Text('Versión Instalada', style: TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text('Versión $versionNombre (Build $versionBuild)'),
                   ),
                 ],
               ),
@@ -425,6 +1018,84 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
     );
   }
 
+  void _modalCrearUsuarioNormal() {
+    final userCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.person_add, color: Colors.teal),
+            SizedBox(width: 8),
+            Expanded(child: Text('Crear Usuario Normal')),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Los usuarios normales solo pueden vender, ver ganancias y registrar deudas. La pestaña "Productos" estará oculta.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: userCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Nuevo Usuario',
+                  prefixIcon: Icon(Icons.person_outline),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Contraseña',
+                  prefixIcon: Icon(Icons.lock_outline),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            onPressed: () async {
+              final userText = userCtrl.text.trim();
+              final passText = passCtrl.text.trim();
+
+              if (userText.isEmpty || passText.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Ingresa el usuario y la contraseña')),
+                );
+                return;
+              }
+
+              final nav = Navigator.of(ctx);
+              final messenger = ScaffoldMessenger.of(context);
+              await dbHelper.crearUsuarioNormal(usuario: userText, password: passText);
+              nav.pop();
+              if (mounted) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Usuario normal "$userText" creado correctamente'),
+                    backgroundColor: Colors.teal,
+                  ),
+                );
+              }
+            },
+            child: const Text('Crear Usuario'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _modalMostrarQrYape() async {
     final datosYape = await dbHelper.obtenerDatosYape();
     if (!mounted) return;
@@ -432,250 +1103,233 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
     final String nombre = datosYape['yape_nombre'] ?? '';
     final String numero = datosYape['yape_numero'] ?? '';
     final String qrPath = datosYape['yape_qr_path'] ?? '';
+    final String base64Img = datosYape['yape_qr_base64'] ?? '';
 
     showDialog(
       context: context,
       builder: (ctx) {
-        final size = MediaQuery.of(context).size;
-        final double modalWidth = (size.width * 0.88).clamp(280.0, 380.0);
-
         return BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 10.0, sigmaY: 10.0),
           child: Dialog(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final double qrSize = (modalWidth * 0.72).clamp(180.0, 260.0);
-
-                return Container(
-                  width: modalWidth,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF0F0826), Color(0xFF1E0A45)],
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                    ),
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: const Color(0xFF8B5CF6), width: 1.8),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF8B5CF6).withValues(alpha: 0.35),
-                        blurRadius: 25,
-                        spreadRadius: 2,
+            child: Container(
+              width: 360,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0F0826), Color(0xFF1E0A45)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: const Color(0xFF8B5CF6), width: 1.8),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.35),
+                    blurRadius: 25,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(width: 16, height: 2, color: const Color(0xFF00E676)),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF00E676),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Text(
+                          'S/',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                            color: Color(0xFF0F0826),
+                          ),
+                        ),
                       ),
+                      const SizedBox(width: 8),
+                      Container(width: 16, height: 2, color: const Color(0xFF00E676)),
                     ],
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Ícono Yape con acentos laterales
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Container(width: 14, height: 2, color: const Color(0xFF00E676)),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF00E676),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Text(
-                              'S/',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                                color: Color(0xFF0F0826),
+                  const SizedBox(height: 10),
+
+                  Text(
+                    nombre.isNotEmpty ? nombre : 'Titular Yape',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Escanea el código QR para pagar',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                  ),
+                  const SizedBox(height: 16),
+
+                  Container(
+                    width: 240,
+                    height: 240,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFA78BFA), width: 2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.4),
+                          blurRadius: 15,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: base64Img.isNotEmpty
+                          ? ClipRect(
+                              child: Transform.scale(
+                                scale: 2.10,
+                                alignment: const Alignment(0.0, -0.40),
+                                child: Image.memory(
+                                  base64Decode(base64Img),
+                                  fit: BoxFit.cover,
+                                ),
                               ),
+                            )
+                          : (qrPath.isNotEmpty && File(qrPath).existsSync())
+                              ? ClipRect(
+                                  child: Transform.scale(
+                                    scale: 2.10,
+                                    alignment: const Alignment(0.0, -0.40),
+                                    child: Image.file(
+                                      File(qrPath),
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                )
+                              : Container(
+                                  color: Colors.purple.shade50,
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: const [
+                                      Icon(Icons.qr_code_2, size: 90, color: Color(0xFF702082)),
+                                      SizedBox(height: 8),
+                                      Text('Sin Imagen QR', style: TextStyle(color: Color(0xFF702082), fontWeight: FontWeight.bold)),
+                                    ],
+                                  ),
+                                ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  if (numero.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(30),
+                        border: Border.all(color: const Color(0xFF334155)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.smartphone, color: Color(0xFFE040FB), size: 18),
+                          Container(
+                            height: 14,
+                            width: 1,
+                            margin: const EdgeInsets.symmetric(horizontal: 10),
+                            color: Colors.grey.shade700,
+                          ),
+                          Text(
+                            numero,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 0.5,
                             ),
                           ),
-                          const SizedBox(width: 6),
-                          Container(width: 14, height: 2, color: const Color(0xFF00E676)),
                         ],
                       ),
-                      const SizedBox(height: 6),
+                    ),
+                  const SizedBox(height: 14),
 
-                      // Nombre del Titular
-                      Text(
-                        nombre.isNotEmpty ? nombre : 'Titular Yape',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Escanea el código QR para pagar',
-                        style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Contenedor Principal del QR Responsivo 1:1 (BoxFit.contain sin recortes)
-                      SizedBox(
-                        width: qrSize,
-                        height: qrSize,
-                        child: AspectRatio(
-                          aspectRatio: 1.0,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(color: const Color(0xFFA78BFA), width: 2),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.4),
-                                  blurRadius: 15,
-                                  spreadRadius: 1,
-                                ),
-                              ],
+                  if (numero.isNotEmpty)
+                    SizedBox(
+                      width: double.infinity,
+                      child: InkWell(
+                        onTap: () {
+                          Clipboard.setData(ClipboardData(text: numero));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Número de Yape copiado al portapapeles 📱'),
+                              backgroundColor: Color(0xFF8E24AA),
+                              duration: Duration(seconds: 2),
                             ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(16),
-                              child: Padding(
-                                padding: const EdgeInsets.all(2.0),
-                                child: qrPath.isNotEmpty && File(qrPath).existsSync()
-                                    ? ClipRect(
-                                        child: Transform.scale(
-                                          scale: 2.10,
-                                          alignment: const Alignment(0.0, -0.40),
-                                          child: Image.file(
-                                            File(qrPath),
-                                            fit: BoxFit.cover,
-                                          ),
-                                        ),
-                                      )
-                                    : Container(
-                                        color: Colors.purple.shade50,
-                                        child: Column(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: const [
-                                            Icon(Icons.qr_code_2, size: 80, color: Color(0xFF702082)),
-                                            SizedBox(height: 6),
-                                            Text(
-                                              'Sin Imagen QR',
-                                              style: TextStyle(color: Color(0xFF702082), fontWeight: FontWeight.bold, fontSize: 13),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-
-                      // Número de celular Yape
-                      if (numero.isNotEmpty)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(30),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                           decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.3),
-                            borderRadius: BorderRadius.circular(24),
-                            border: Border.all(color: const Color(0xFF334155)),
+                            gradient: const LinearGradient(
+                              colors: [Color(0xFF8E24AA), Color(0xFFD500F9)],
+                            ),
+                            borderRadius: BorderRadius.circular(30),
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFFD500F9).withValues(alpha: 0.4),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
                           ),
                           child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.smartphone, color: Color(0xFFE040FB), size: 16),
-                              Container(
-                                height: 12,
-                                width: 1,
-                                margin: const EdgeInsets.symmetric(horizontal: 8),
-                                color: Colors.grey.shade700,
-                              ),
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.copy_rounded, color: Colors.white, size: 18),
+                              SizedBox(width: 8),
                               Text(
-                                numero,
-                                style: const TextStyle(
-                                  fontSize: 15,
+                                'Copiar número',
+                                style: TextStyle(
                                   fontWeight: FontWeight.bold,
+                                  fontSize: 14,
                                   color: Colors.white,
-                                  letterSpacing: 0.5,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      if (numero.isNotEmpty) const SizedBox(height: 10),
-
-                      // Botón Copiar Número
-                      if (numero.isNotEmpty)
-                        SizedBox(
-                          width: double.infinity,
-                          child: InkWell(
-                            onTap: () {
-                              Clipboard.setData(ClipboardData(text: numero));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Número de Yape copiado al portapapeles 📱'),
-                                  backgroundColor: Color(0xFF8E24AA),
-                                  duration: Duration(seconds: 2),
-                                ),
-                              );
-                            },
-                            borderRadius: BorderRadius.circular(24),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [Color(0xFF8E24AA), Color(0xFFD500F9)],
-                                ),
-                                borderRadius: BorderRadius.circular(24),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: const Color(0xFFD500F9).withValues(alpha: 0.35),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 3),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: const [
-                                  Icon(Icons.copy_rounded, color: Colors.white, size: 16),
-                                  SizedBox(width: 6),
-                                  Text(
-                                    'Copiar número',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: 12),
-
-                      // Pie con Escudo "Pagos seguros"
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Container(width: 24, height: 1, color: Colors.grey.shade700),
-                          const SizedBox(width: 6),
-                          const Icon(Icons.shield_outlined, size: 13, color: Colors.grey),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Pagos seguros',
-                            style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
-                          ),
-                          const SizedBox(width: 6),
-                          Container(width: 24, height: 1, color: Colors.grey.shade700),
-                        ],
                       ),
+                    ),
+                  const SizedBox(height: 16),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(width: 30, height: 1, color: Colors.grey.shade700),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.shield_outlined, size: 14, color: Colors.grey),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Pagos seguros',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade400),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(width: 30, height: 1, color: Colors.grey.shade700),
                     ],
                   ),
-                );
-              },
+                ],
+              ),
             ),
           ),
         );
@@ -893,7 +1547,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
         return ListView(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           children: [
-            // Subtítulo descriptivo y Botón de Filtro de Periodo
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -944,15 +1597,12 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
             ),
             const SizedBox(height: 16),
 
-            // Resumen de Métricas KPI
             _seccionMetricasKPINeon(data),
             const SizedBox(height: 20),
 
-            // Gráfico de Ganancias Semanales
             _seccionGraficoVentasNeon(),
             const SizedBox(height: 20),
 
-            // Ranking de Productos Más Vendidos
             _seccionProductosMasVendidos(),
           ],
         );
@@ -1262,7 +1912,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
         borderRadius: BorderRadius.circular(16),
         child: Stack(
           children: [
-            // Onda ubicada a la derecha para NO cruzarse con el texto de la izquierda
             Positioned(
               right: 0,
               bottom: 0,
@@ -1757,7 +2406,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Título
                   Row(
                     children: [
                       Container(
@@ -1783,7 +2431,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                   ),
                   const SizedBox(height: 12),
 
-                  // Select / Dropdown de Producto (Sin texto de stock)
                   DropdownButtonFormField<int>(
                     initialValue: productoSeleccionadoId,
                     isExpanded: true,
@@ -1813,7 +2460,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                   ),
                   const SizedBox(height: 10),
 
-                  // Botón Agregar a Venta (Ancho completo)
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -1849,7 +2495,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Lista / Carrito de productos agregados con botones +/-
                   const Text(
                     '📋 Productos agregados:',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
@@ -1904,7 +2549,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                                         ],
                                       ),
                                     ),
-                                    // Botones + / - para aumentar o disminuir cantidad
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
@@ -1969,7 +2613,6 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                   ),
                   const SizedBox(height: 12),
 
-                  // Resumen y Confirmar
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -2146,7 +2789,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
     );
   }
 
-  // --- 3. PESTAÑA PRODUCTOS (LISTADO, EDICIÓN Y REGISTRO) ---
+  // --- 3. PESTAÑA PRODUCTOS (LISTADO, EDICIÓN Y REGISTRO - EXCLUSIVA ADMIN) ---
   Widget _vistaProductos() {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(

@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'firestore_helper.dart';
@@ -93,6 +95,216 @@ class DatabaseHelper {
         valor TEXT NOT NULL
       )
     ''');
+
+    // 6. Resumen de ganancias semanales y mensuales guardadas en BD
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS resumen_ganancias (
+        periodo_clave TEXT PRIMARY KEY,
+        monto_total REAL NOT NULL DEFAULT 0.0,
+        ganancia_total REAL NOT NULL DEFAULT 0.0,
+        unidades_totales INTEGER NOT NULL DEFAULT 0,
+        ultima_actualizacion TEXT NOT NULL
+      )
+    ''');
+
+    // 7. Usuarios y roles (Admin / Vendedor)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS usuarios (
+        usuario TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'VENDEDOR'
+      )
+    ''');
+
+    // Insertar usuario Admin por defecto
+    await db.insert('usuarios', {
+      'usuario': 'admin',
+      'password': 'admin2510',
+      'rol': 'ADMIN',
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  // --- PERSISTENCIA DE SESIÓN ACTIVA ---
+
+  Future<void> guardarSesionActiva({
+    required String usuario,
+    required String rol,
+  }) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+    await db.insert('configuracion', {'clave': 'sesion_usuario', 'valor': usuario}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'sesion_rol', 'valor': rol}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> obtenerSesionActiva() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+    final res = await db.query('configuracion');
+    String usuario = '';
+    String rol = '';
+
+    for (var r in res) {
+      if (r['clave'] == 'sesion_usuario') usuario = r['valor']?.toString() ?? '';
+      if (r['clave'] == 'sesion_rol') rol = r['valor']?.toString() ?? '';
+    }
+
+    if (usuario.isNotEmpty && rol.isNotEmpty) {
+      return {'usuario': usuario, 'rol': rol};
+    }
+    return null;
+  }
+
+  Future<void> cerrarSesionActiva() async {
+    final db = await database;
+    await db.delete('configuracion', where: 'clave = ? OR clave = ?', whereArgs: ['sesion_usuario', 'sesion_rol']);
+  }
+
+  // --- SISTEMA DE USUARIOS Y AUTENTICACIÓN ---
+
+  Future<Map<String, dynamic>?> autenticarUsuario(String user, String pass) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS usuarios (
+        usuario TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'VENDEDOR'
+      )
+    ''');
+
+    // Garantizar admin por defecto
+    await db.insert('usuarios', {
+      'usuario': 'admin',
+      'password': 'admin2510',
+      'rol': 'ADMIN',
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+
+    final res = await db.query(
+      'usuarios',
+      where: 'usuario = ? AND password = ?',
+      whereArgs: [user.trim().toLowerCase(), pass.trim()],
+    );
+
+    if (res.isNotEmpty) {
+      return {
+        'usuario': res.first['usuario'],
+        'rol': res.first['rol'],
+      };
+    }
+    return null;
+  }
+
+  Future<void> crearUsuarioNormal({
+    required String usuario,
+    required String password,
+  }) async {
+    final db = await database;
+    final userClean = usuario.trim().toLowerCase();
+    await db.insert('usuarios', {
+      'usuario': userClean,
+      'password': password.trim(),
+      'rol': 'VENDEDOR',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    SyncManager.instance.subirUsuario(userClean, password.trim(), 'VENDEDOR');
+  }
+
+  Future<void> sincronizarUsuarioLocal({
+    required String usuario,
+    required String password,
+    required String rol,
+  }) async {
+    final db = await database;
+    await db.insert('usuarios', {
+      'usuario': usuario,
+      'password': password,
+      'rol': rol,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  // --- RECALCULO Y GUARDADO DE RESUMEN DE GANANCIAS EN BD ---
+
+  Future<void> actualizarResumenGanancias() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS resumen_ganancias (
+        periodo_clave TEXT PRIMARY KEY,
+        monto_total REAL NOT NULL DEFAULT 0.0,
+        ganancia_total REAL NOT NULL DEFAULT 0.0,
+        unidades_totales INTEGER NOT NULL DEFAULT 0,
+        ultima_actualizacion TEXT NOT NULL
+      )
+    ''');
+
+    final now = DateTime.now();
+    final hoyStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    final mesStr = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+
+    final resSemana = await db.rawQuery('''
+      SELECT 
+        COALESCE(SUM(monto_total_cobrado), 0.0) AS total_ventas,
+        COALESCE(SUM(ganancia_neta), 0.0) AS total_ganancia,
+        COALESCE(SUM(cantidad), 0) AS total_unidades
+      FROM ventas
+      WHERE date(fecha) >= date('$hoyStr', '-6 days')
+    ''');
+
+    final double ventasSemana = (resSemana.first['total_ventas'] as num?)?.toDouble() ?? 0.0;
+    final double gananciaSemana = (resSemana.first['total_ganancia'] as num?)?.toDouble() ?? 0.0;
+    final int unidadesSemana = (resSemana.first['total_unidades'] as num?)?.toInt() ?? 0;
+
+    await db.insert('resumen_ganancias', {
+      'periodo_clave': 'SEMANAL_ACTUAL',
+      'monto_total': ventasSemana,
+      'ganancia_total': gananciaSemana,
+      'unidades_totales': unidadesSemana,
+      'ultima_actualizacion': now.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    final resMes = await db.rawQuery('''
+      SELECT 
+        COALESCE(SUM(monto_total_cobrado), 0.0) AS total_ventas,
+        COALESCE(SUM(ganancia_neta), 0.0) AS total_ganancia,
+        COALESCE(SUM(cantidad), 0) AS total_unidades
+      FROM ventas
+      WHERE strftime('%Y-%m', fecha) = '$mesStr'
+    ''');
+
+    final double ventasMes = (resMes.first['total_ventas'] as num?)?.toDouble() ?? 0.0;
+    final double gananciaMes = (resMes.first['total_ganancia'] as num?)?.toDouble() ?? 0.0;
+    final int unidadesMes = (resMes.first['total_unidades'] as num?)?.toInt() ?? 0;
+
+    final claveMesDoc = "MES_$mesStr";
+    await db.insert('resumen_ganancias', {
+      'periodo_clave': claveMesDoc,
+      'monto_total': ventasMes,
+      'ganancia_total': gananciaMes,
+      'unidades_totales': unidadesMes,
+      'ultima_actualizacion': now.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    SyncManager.instance.subirResumenGanancias(
+      clave: 'SEMANAL_ACTUAL',
+      montoTotal: ventasSemana,
+      gananciaTotal: gananciaSemana,
+      unidadesTotales: unidadesSemana,
+    );
+
+    SyncManager.instance.subirResumenGanancias(
+      clave: claveMesDoc,
+      montoTotal: ventasMes,
+      gananciaTotal: gananciaMes,
+      unidadesTotales: unidadesMes,
+    );
   }
 
   // --- PREFERENCIAS DE MODO OSCURO ---
@@ -137,6 +349,39 @@ class DatabaseHelper {
     required String nombre,
     required String numero,
     required String qrPath,
+    String base64Img = '',
+  }) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS configuracion (
+        clave TEXT PRIMARY KEY,
+        valor TEXT NOT NULL
+      )
+    ''');
+
+    if (base64Img.isEmpty && qrPath.isNotEmpty && File(qrPath).existsSync()) {
+      try {
+        final bytes = await File(qrPath).readAsBytes();
+        base64Img = base64Encode(bytes);
+      } catch (_) {}
+    }
+
+    await db.insert('configuracion', {'clave': 'yape_nombre', 'valor': nombre}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'yape_numero', 'valor': numero}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'yape_qr_path', 'valor': qrPath}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('configuracion', {'clave': 'yape_qr_base64', 'valor': base64Img}, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    SyncManager.instance.subirDatosYape(
+      nombre: nombre,
+      numero: numero,
+      base64Img: base64Img,
+    );
+  }
+
+  Future<void> sincronizarDatosYapeLocal({
+    required String nombre,
+    required String numero,
+    required String base64Img,
   }) async {
     final db = await database;
     await db.execute('''
@@ -148,7 +393,9 @@ class DatabaseHelper {
 
     await db.insert('configuracion', {'clave': 'yape_nombre', 'valor': nombre}, conflictAlgorithm: ConflictAlgorithm.replace);
     await db.insert('configuracion', {'clave': 'yape_numero', 'valor': numero}, conflictAlgorithm: ConflictAlgorithm.replace);
-    await db.insert('configuracion', {'clave': 'yape_qr_path', 'valor': qrPath}, conflictAlgorithm: ConflictAlgorithm.replace);
+    if (base64Img.isNotEmpty) {
+      await db.insert('configuracion', {'clave': 'yape_qr_base64', 'valor': base64Img}, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
   }
 
   Future<Map<String, String>> obtenerDatosYape() async {
@@ -165,6 +412,7 @@ class DatabaseHelper {
       'yape_nombre': '',
       'yape_numero': '',
       'yape_qr_path': '',
+      'yape_qr_base64': '',
     };
 
     for (var r in res) {
@@ -421,6 +669,8 @@ class DatabaseHelper {
       gananciaNeta: ganancia,
       fecha: fecha,
     );
+
+    await actualizarResumenGanancias();
   }
 
   Future<void> registrarVentaMultiple(List<Map<String, dynamic>> items) async {
@@ -473,6 +723,8 @@ class DatabaseHelper {
         );
       }
     });
+
+    await actualizarResumenGanancias();
   }
 
   // --- MÓDULO DE DEUDAS (FIADOS) ---
@@ -735,6 +987,8 @@ class DatabaseHelper {
       gananciaNeta: ganancia,
       fecha: ahora,
     );
+
+    await actualizarResumenGanancias();
   }
 
   Future<void> saldarDeudaParcial(int deudaId, double montoAbono) async {
@@ -797,6 +1051,8 @@ class DatabaseHelper {
       gananciaNeta: gananciaAbono,
       fecha: ahora,
     );
+
+    await actualizarResumenGanancias();
   }
 
   // --- CONSULTAS DASHBOARD, GRÁFICOS Y MESES ---

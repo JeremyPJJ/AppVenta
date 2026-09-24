@@ -23,6 +23,8 @@ class SyncManager {
       _escucharProductosEnNube(onDataChanged);
       _escucharVentasEnNube(onDataChanged);
       _escucharDeudasEnNube(onDataChanged);
+      _escucharYapeEnNube(onDataChanged);
+      _escucharUsuariosEnNube(onDataChanged);
     } catch (e) {
       // Continuar localmente si falla
     }
@@ -105,6 +107,26 @@ class SyncManager {
         );
       }
 
+      final ypDoc = await FirebaseFirestore.instance.collection('configuracion_app').doc('yape').get();
+      if (ypDoc.exists && ypDoc.data() != null) {
+        final data = ypDoc.data()!;
+        await dbHelper.sincronizarDatosYapeLocal(
+          nombre: data['yape_nombre']?.toString() ?? '',
+          numero: data['yape_numero']?.toString() ?? '',
+          base64Img: data['yape_qr_base64']?.toString() ?? '',
+        );
+      }
+
+      final usrs = await FirebaseFirestore.instance.collection('usuarios').get();
+      for (var doc in usrs.docs) {
+        final data = doc.data();
+        await dbHelper.sincronizarUsuarioLocal(
+          usuario: doc.id,
+          password: data['password']?.toString() ?? '',
+          rol: data['rol']?.toString() ?? 'VENDEDOR',
+        );
+      }
+
       onDataChanged();
     } catch (_) {}
   }
@@ -181,6 +203,40 @@ class SyncManager {
     });
   }
 
+  void _escucharYapeEnNube(Function() onDataChanged) {
+    FirebaseFirestore.instance
+        .collection('configuracion_app')
+        .doc('yape')
+        .snapshots()
+        .listen((doc) async {
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        await dbHelper.sincronizarDatosYapeLocal(
+          nombre: data['yape_nombre']?.toString() ?? '',
+          numero: data['yape_numero']?.toString() ?? '',
+          base64Img: data['yape_qr_base64']?.toString() ?? '',
+        );
+        onDataChanged();
+      }
+    });
+  }
+
+  void _escucharUsuariosEnNube(Function() onDataChanged) {
+    FirebaseFirestore.instance.collection('usuarios').snapshots().listen((snapshot) async {
+      for (var doc in snapshot.docChanges) {
+        final data = doc.doc.data();
+        if (data != null) {
+          await dbHelper.sincronizarUsuarioLocal(
+            usuario: doc.doc.id,
+            password: data['password']?.toString() ?? '',
+            rol: data['rol']?.toString() ?? 'VENDEDOR',
+          );
+        }
+      }
+      onDataChanged();
+    });
+  }
+
   Future<void> subirProducto(int id, String nombre, double precio, int stock) async {
     if (!_initialized) return;
     try {
@@ -237,6 +293,55 @@ class SyncManager {
         'costo_base': costoBase,
         'estado': estado,
         'fecha_creacion': fecha,
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  Future<void> subirDatosYape({
+    required String nombre,
+    required String numero,
+    required String base64Img,
+  }) async {
+    if (!_initialized) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('configuracion_app')
+          .doc('yape')
+          .set({
+        'yape_nombre': nombre,
+        'yape_numero': numero,
+        'yape_qr_base64': base64Img,
+        'ultima_actualizacion': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  Future<void> subirResumenGanancias({
+    required String clave,
+    required double montoTotal,
+    required double gananciaTotal,
+    required int unidadesTotales,
+  }) async {
+    if (!_initialized) return;
+    try {
+      await FirebaseFirestore.instance.collection('resumen_ganancias').doc(clave).set({
+        'periodo_clave': clave,
+        'monto_total': montoTotal,
+        'ganancia_total': gananciaTotal,
+        'unidades_totales': unidadesTotales,
+        'ultima_actualizacion': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  Future<void> subirUsuario(String usuario, String password, String rol) async {
+    if (!_initialized) return;
+    try {
+      await FirebaseFirestore.instance.collection('usuarios').doc(usuario).set({
+        'usuario': usuario,
+        'password': password,
+        'rol': rol,
+        'ultima_actualizacion': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (_) {}
   }
