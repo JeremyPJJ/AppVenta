@@ -5,8 +5,9 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:ota_update/ota_update.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'database/db_helper.dart';
 import 'database/firestore_helper.dart';
@@ -693,8 +694,12 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                       onPressed: descargando
                           ? null
                           : () async {
-                              final urlLimpia = urlDescarga.trim();
+                              var urlLimpia = urlDescarga.trim();
                               if (urlLimpia.isNotEmpty) {
+                                if (!urlLimpia.startsWith('http://') && !urlLimpia.startsWith('https://')) {
+                                  urlLimpia = 'https://$urlLimpia';
+                                }
+
                                 try {
                                   setModalState(() {
                                     descargando = true;
@@ -702,34 +707,45 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                                     progresoDescarga = 0.0;
                                   });
 
-                                  OtaUpdate()
-                                      .execute(urlLimpia, destinationFilename: 'Ventas_update.apk')
-                                      .listen(
-                                    (OtaEvent event) {
-                                      setModalState(() {
-                                        if (event.status == OtaStatus.DOWNLOADING) {
-                                          final double p = (double.tryParse(event.value ?? '0') ?? 0.0) / 100.0;
-                                          progresoDescarga = p.clamp(0.0, 1.0);
-                                          estadoDescarga = 'Descargando nueva versión: ${(progresoDescarga * 100).toInt()}%';
-                                        } else if (event.status == OtaStatus.INSTALLING) {
-                                          estadoDescarga = 'Abriendo instalador nativo...';
-                                        } else if (event.status == OtaStatus.PERMISSION_NOT_GRANTED_ERROR) {
-                                          estadoDescarga = 'Ocurrió un error de permisos';
-                                          descargando = false;
-                                        } else {
-                                          descargando = false;
-                                        }
-                                      });
-                                    },
-                                    onError: (e) async {
-                                      setModalState(() => descargando = false);
-                                      final uri = Uri.parse(urlLimpia);
-                                      if (await canLaunchUrl(uri)) {
-                                        await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  final client = HttpClient();
+                                  final request = await client.getUrl(Uri.parse(urlLimpia));
+                                  final response = await request.close();
+
+                                  if (response.statusCode == 200 || response.statusCode == 302 || response.statusCode == 301) {
+                                    final totalBytes = response.contentLength;
+                                    int downloadedBytes = 0;
+
+                                    final tempDir = await getTemporaryDirectory();
+                                    final apkFile = File('${tempDir.path}/Ventas_Update.apk');
+                                    final sink = apkFile.openWrite();
+
+                                    await response.forEach((chunk) {
+                                      downloadedBytes += chunk.length;
+                                      sink.add(chunk);
+                                      if (totalBytes > 0) {
+                                        setModalState(() {
+                                          progresoDescarga = (downloadedBytes / totalBytes).clamp(0.0, 1.0);
+                                          estadoDescarga = 'Descargando APK: ${(progresoDescarga * 100).toInt()}%';
+                                        });
                                       }
-                                    },
-                                  );
-                                } catch (_) {
+                                    });
+
+                                    await sink.flush();
+                                    await sink.close();
+
+                                    setModalState(() {
+                                      estadoDescarga = 'Abriendo instalador de Android...';
+                                      descargando = false;
+                                    });
+
+                                    await OpenFilex.open(
+                                      apkFile.path,
+                                      type: 'application/vnd.android.package-archive',
+                                    );
+                                  } else {
+                                    throw Exception('HTTP Status ${response.statusCode}');
+                                  }
+                                } catch (e) {
                                   setModalState(() => descargando = false);
                                   final uri = Uri.parse(urlLimpia);
                                   if (await canLaunchUrl(uri)) {
@@ -738,7 +754,7 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                                 }
                               } else {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('No hay enlace de APK configurado en la nube')),
+                                  const SnackBar(content: Text('No hay enlace de APK configurado en Firebase')),
                                 );
                               }
                             },
