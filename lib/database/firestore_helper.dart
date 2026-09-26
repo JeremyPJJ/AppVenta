@@ -224,13 +224,17 @@ class SyncManager {
   void _escucharUsuariosEnNube(Function() onDataChanged) {
     FirebaseFirestore.instance.collection('usuarios').snapshots().listen((snapshot) async {
       for (var doc in snapshot.docChanges) {
-        final data = doc.doc.data();
-        if (data != null) {
-          await dbHelper.sincronizarUsuarioLocal(
-            usuario: doc.doc.id,
-            password: data['password']?.toString() ?? '',
-            rol: data['rol']?.toString() ?? 'VENDEDOR',
-          );
+        if (doc.type == DocumentChangeType.added || doc.type == DocumentChangeType.modified) {
+          final data = doc.doc.data();
+          if (data != null) {
+            await dbHelper.sincronizarUsuarioLocal(
+              usuario: doc.doc.id,
+              password: data['password']?.toString() ?? '',
+              rol: data['rol']?.toString() ?? 'VENDEDOR',
+            );
+          }
+        } else if (doc.type == DocumentChangeType.removed) {
+          await dbHelper.eliminarUsuarioLocal(doc.doc.id);
         }
       }
       onDataChanged();
@@ -343,6 +347,13 @@ class SyncManager {
         'rol': rol,
         'ultima_actualizacion': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  Future<void> eliminarUsuarioEnNube(String usuario) async {
+    if (!_initialized) return;
+    try {
+      await FirebaseFirestore.instance.collection('usuarios').doc(usuario).delete();
     } catch (_) {}
   }
 

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'firestore_helper.dart';
@@ -188,10 +189,14 @@ class DatabaseHelper {
       'rol': 'ADMIN',
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
+    final userClean = user.trim().toLowerCase();
+    final passClean = pass.trim();
+
+    // 1. Consultar localmente en SQLite
     final res = await db.query(
       'usuarios',
       where: 'usuario = ? AND password = ?',
-      whereArgs: [user.trim().toLowerCase(), pass.trim()],
+      whereArgs: [userClean, passClean],
     );
 
     if (res.isNotEmpty) {
@@ -200,6 +205,30 @@ class DatabaseHelper {
         'rol': res.first['rol'],
       };
     }
+
+    // 2. Si es una instalación nueva en otro celular, consultar directamente en Firebase
+    try {
+      final doc = await FirebaseFirestore.instance.collection('usuarios').doc(userClean).get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        final String passNube = data['password']?.toString() ?? '';
+        final String rolNube = data['rol']?.toString() ?? 'VENDEDOR';
+
+        if (passNube == passClean) {
+          await db.insert('usuarios', {
+            'usuario': userClean,
+            'password': passClean,
+            'rol': rolNube,
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+          return {
+            'usuario': userClean,
+            'rol': rolNube,
+          };
+        }
+      }
+    } catch (_) {}
+
     return null;
   }
 
@@ -216,6 +245,52 @@ class DatabaseHelper {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
 
     SyncManager.instance.subirUsuario(userClean, password.trim(), 'VENDEDOR');
+  }
+
+  Future<List<Map<String, dynamic>>> obtenerListaUsuarios() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS usuarios (
+        usuario TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'VENDEDOR'
+      )
+    ''');
+    return await db.query('usuarios', where: "rol = 'VENDEDOR'", orderBy: 'usuario ASC');
+  }
+
+  Future<void> editarUsuario({
+    required String usuarioActual,
+    required String nuevoUsuario,
+    required String nuevaPassword,
+  }) async {
+    final db = await database;
+    final userClean = nuevoUsuario.trim().toLowerCase();
+    final passClean = nuevaPassword.trim();
+
+    if (usuarioActual != userClean) {
+      await db.delete('usuarios', where: 'usuario = ?', whereArgs: [usuarioActual]);
+      SyncManager.instance.eliminarUsuarioEnNube(usuarioActual);
+    }
+
+    await db.insert('usuarios', {
+      'usuario': userClean,
+      'password': passClean,
+      'rol': 'VENDEDOR',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    SyncManager.instance.subirUsuario(userClean, passClean, 'VENDEDOR');
+  }
+
+  Future<void> eliminarUsuario(String usuario) async {
+    final db = await database;
+    await db.delete('usuarios', where: 'usuario = ?', whereArgs: [usuario]);
+    SyncManager.instance.eliminarUsuarioEnNube(usuario);
+  }
+
+  Future<void> eliminarUsuarioLocal(String usuario) async {
+    final db = await database;
+    await db.delete('usuarios', where: 'usuario = ?', whereArgs: [usuario]);
   }
 
   Future<void> sincronizarUsuarioLocal({

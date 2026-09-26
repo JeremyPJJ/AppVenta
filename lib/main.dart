@@ -20,6 +20,9 @@ void main() async {
   final esOscuro = await db.obtenerModoOscuro();
   themeModeNotifier.value = esOscuro ? ThemeMode.dark : ThemeMode.light;
 
+  // Inicializar Firebase Sync de inmediato al abrir la aplicación
+  SyncManager.instance.initFirebaseAndSync(() {});
+
   final sesionActiva = await db.obtenerSesionActiva();
 
   runApp(MyApp(sesionInicial: sesionActiva));
@@ -976,6 +979,16 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
                     ),
                     const Divider(),
                     ListTile(
+                      leading: const Icon(Icons.manage_accounts, color: Colors.indigo),
+                      title: const Text('Gestionar Usuarios', style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: const Text('Ver, editar contraseñas o eliminar vendedores'),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _modalGestionarUsuarios();
+                      },
+                    ),
+                    const Divider(),
+                    ListTile(
                       leading: const Icon(Icons.qr_code_2, color: Color(0xFF702082)),
                       title: const Text('Configurar Yape / QR', style: TextStyle(fontWeight: FontWeight.bold)),
                       subtitle: const Text('Editar titular, número e imagen del QR'),
@@ -1106,6 +1119,231 @@ class _PantallaPrincipalState extends State<PantallaPrincipal> {
               }
             },
             child: const Text('Crear Usuario'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _modalGestionarUsuarios() async {
+    final usuarios = await dbHelper.obtenerListaUsuarios();
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          final bool esModoOscuro = themeModeNotifier.value == ThemeMode.dark;
+
+          return AlertDialog(
+            title: Row(
+              children: const [
+                Icon(Icons.manage_accounts, color: Colors.indigo),
+                SizedBox(width: 8),
+                Expanded(child: Text('Gestionar Usuarios')),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: usuarios.isEmpty
+                  ? Container(
+                      padding: const EdgeInsets.all(20),
+                      alignment: Alignment.center,
+                      child: const Text(
+                        'No hay usuarios vendedores creados.\nUsa "Crear Usuario Normal" en Configuración para registrar uno.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    )
+                  : ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: usuarios.length,
+                      separatorBuilder: (context, index) => const Divider(height: 12),
+                      itemBuilder: (context, i) {
+                        final u = usuarios[i];
+                        final String user = u['usuario'].toString();
+                        final String pass = u['password'].toString();
+
+                        return Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: esModoOscuro ? const Color(0xFF1E293B) : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                backgroundColor: Colors.teal.shade700,
+                                child: const Icon(Icons.person, color: Colors.white, size: 20),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      user,
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Contraseña: $pass',
+                                      style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Color(0xFF60A5FA), size: 20),
+                                tooltip: 'Editar usuario / contraseña',
+                                onPressed: () async {
+                                  Navigator.pop(ctx);
+                                  _modalEditarUsuario(user, pass);
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                                tooltip: 'Eliminar usuario',
+                                onPressed: () {
+                                  _confirmarEliminarUsuario(ctx, user, setModalState, usuarios, i);
+                                },
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _confirmarEliminarUsuario(
+    BuildContext parentCtx,
+    String usuario,
+    StateSetter setModalState,
+    List<Map<String, dynamic>> usuarios,
+    int index,
+  ) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.warning_amber_rounded, color: Colors.red, size: 26),
+            SizedBox(width: 8),
+            Expanded(child: Text('Eliminar Usuario')),
+          ],
+        ),
+        content: Text('¿Estás seguro de que deseas eliminar la cuenta del vendedor "$usuario"? Ya no podrá iniciar sesión.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            onPressed: () async {
+              final nav = Navigator.of(ctx);
+              final messenger = ScaffoldMessenger.of(context);
+              await dbHelper.eliminarUsuario(usuario);
+              nav.pop();
+              setModalState(() {
+                usuarios.removeAt(index);
+              });
+              if (mounted) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Usuario "$usuario" eliminado correctamente'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('Sí, Eliminar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _modalEditarUsuario(String usuarioActual, String passwordActual) {
+    final userCtrl = TextEditingController(text: usuarioActual);
+    final passCtrl = TextEditingController(text: passwordActual);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: const [
+            Icon(Icons.edit_note, color: Colors.indigo),
+            SizedBox(width: 8),
+            Expanded(child: Text('Editar Usuario')),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: userCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Usuario',
+                  prefixIcon: Icon(Icons.person_outline),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Nueva Contraseña',
+                  prefixIcon: Icon(Icons.lock_outline),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+            onPressed: () async {
+              final userText = userCtrl.text.trim();
+              final passText = passCtrl.text.trim();
+
+              if (userText.isEmpty || passText.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Ingresa el usuario y la contraseña')),
+                );
+                return;
+              }
+
+              final nav = Navigator.of(ctx);
+              final messenger = ScaffoldMessenger.of(context);
+              await dbHelper.editarUsuario(
+                usuarioActual: usuarioActual,
+                nuevoUsuario: userText,
+                nuevaPassword: passText,
+              );
+              nav.pop();
+              if (mounted) {
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Usuario "$userText" actualizado correctamente'),
+                    backgroundColor: Colors.indigo,
+                  ),
+                );
+                _modalGestionarUsuarios();
+              }
+            },
+            child: const Text('Guardar Cambios'),
           ),
         ],
       ),
